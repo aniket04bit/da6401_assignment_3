@@ -55,7 +55,18 @@ def scaled_dot_product_attention(
         output : Attended output,   shape (..., seq_q, d_v)
         attn_w : Attention weights, shape (..., seq_q, seq_k)
     """
-    raise NotImplementedError
+    d_k = Q.size(-1)
+
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(d_k)
+
+    if mask is not None:
+        scores = scores.masked_fill(mask, float('-inf'))
+
+    attn_w = torch.softmax(scores, dim=-1)
+
+    output = torch.matmul(attn_w, V)
+
+    return output, attn_w
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -80,7 +91,7 @@ def make_src_mask(
         True  → position is a PAD token (will be masked out)
         False → real token
     """
-    raise NotImplementedError
+    return (src == pad_idx).unsqueeze(1).unsqueeze(2)
 
 
 def make_tgt_mask(
@@ -98,7 +109,17 @@ def make_tgt_mask(
         Boolean mask, shape [batch, 1, tgt_len, tgt_len]
         True → position is masked out (PAD or future token)
     """
-    raise NotImplementedError
+    batch_size, tgt_len = tgt.shape
+
+    pad_mask = (tgt == pad_idx).unsqueeze(1).unsqueeze(2)
+
+    causal_mask = torch.triu(
+        torch.ones((tgt_len, tgt_len), device=tgt.device), diagonal=1
+    ).bool()
+
+    causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+
+    return pad_mask | causal_mask
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -127,8 +148,14 @@ class MultiHeadAttention(nn.Module):
         self.d_model   = d_model
         self.num_heads = num_heads
         self.d_k       = d_model // num_heads   # depth per head
-        raise NotImplementedError
-    
+
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
+
+        self.dropout = nn.Dropout(dropout)
+        
     def forward(
         self,
         query: torch.Tensor,
@@ -149,7 +176,32 @@ class MultiHeadAttention(nn.Module):
             output : shape [batch, seq_q, d_model]
 
         """
-        raise NotImplementedError
+        batch_size = query.size(0)
+
+        # Linear projections
+        Q = self.W_q(query)
+        K = self.W_k(key)
+        V = self.W_v(value)
+
+        # Split into heads
+        Q = Q.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        K = K.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        V = V.view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+
+        # Adjust mask for multi-head
+        if mask is not None:
+            mask = mask.expand(-1, self.num_heads, -1, -1)
+
+        # Scaled dot-product attention
+        attn_output, _ = scaled_dot_product_attention(Q, K, V, mask)
+
+        # Concatenate heads
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+
+        # Final linear projection
+        output = self.W_o(attn_output)
+
+        return output
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -168,8 +220,23 @@ class PositionalEncoding(nn.Module):
 
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000) -> None:
         super().__init__()
-        raise NotImplementedError
 
+        self.dropout = nn.Dropout(dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
+        )
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        pe = pe.unsqueeze(0)
+
+        self.register_buffer("pe", pe)
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -180,7 +247,8 @@ class PositionalEncoding(nn.Module):
             = x  +  PE[:, :seq_len, :]  
 
         """
-        raise NotImplementedError
+        x = x + self.pe[:, :x.size(1)]
+        return self.dropout(x)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -205,18 +273,19 @@ class PositionwiseFeedForward(nn.Module):
         #   self.linear1 = nn.Linear(d_model, d_ff)
         #   self.linear2 = nn.Linear(d_ff, d_model)
         #   self.dropout = nn.Dropout(p=dropout)
-        raise NotImplementedError
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.linear2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x : shape [batch, seq_len, d_model]
         Returns:
-              shape [batch, seq_len, d_model]
+            shape [batch, seq_len, d_model]
         
         """
-        raise NotImplementedError
-
+        return self.linear2(self.dropout(F.relu(self.linear1(x))))
 
 # ══════════════════════════════════════════════════════════════════════
 #  ENCODER LAYER  
@@ -237,7 +306,13 @@ class EncoderLayer(nn.Module):
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
         super().__init__()
         # TODO:instantiate:
-        raise NotImplementedError
+        self.mha = MultiHeadAttention(d_model, num_heads, dropout)
+        self.ffn = PositionwiseFeedForward(d_model, d_ff, dropout)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, src_mask: torch.Tensor) -> torch.Tensor:
         """
@@ -249,7 +324,15 @@ class EncoderLayer(nn.Module):
             shape [batch, src_len, d_model]
 
         """
-        raise NotImplementedError
+        # Self-Attention + Add & Norm
+        attn_out = self.mha(x, x, x, src_mask)
+        x = self.norm1(x + self.dropout(attn_out))
+
+        # Feed Forward + Add & Norm
+        ffn_out = self.ffn(x)
+        x = self.norm2(x + self.dropout(ffn_out))
+
+        return x
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -273,7 +356,15 @@ class DecoderLayer(nn.Module):
     def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1) -> None:
         super().__init__()
         # TODO: instantiate:
-        raise NotImplementedError
+        self.mha1 = MultiHeadAttention(d_model, num_heads, dropout)  # masked self-attn
+        self.mha2 = MultiHeadAttention(d_model, num_heads, dropout)  # cross-attn
+        self.ffn  = PositionwiseFeedForward(d_model, d_ff, dropout)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+
+        self.dropout = nn.Dropout(dropout)
 
     def forward(
         self,
@@ -292,8 +383,19 @@ class DecoderLayer(nn.Module):
         Returns:
             shape [batch, tgt_len, d_model]
         """
-        raise NotImplementedError
+        # Masked Self-Attention + Add & Norm
+        attn1 = self.mha1(x, x, x, tgt_mask)
+        x = self.norm1(x + self.dropout(attn1))
 
+        # Cross-Attention (Encoder-Decoder) + Add & Norm
+        attn2 = self.mha2(x, memory, memory, src_mask)
+        x = self.norm2(x + self.dropout(attn2))
+
+        # Feed Forward + Add & Norm
+        ffn_out = self.ffn(x)
+        x = self.norm3(x + self.dropout(ffn_out))
+
+        return x
 
 # ══════════════════════════════════════════════════════════════════════
 #  ENCODER & DECODER STACKS
@@ -304,7 +406,8 @@ class Encoder(nn.Module):
 
     def __init__(self, layer: EncoderLayer, N: int) -> None:
         super().__init__()
-        raise NotImplementedError
+        self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(N)])
+        self.norm = nn.LayerNorm(layer.mha.d_model)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
@@ -314,7 +417,9 @@ class Encoder(nn.Module):
         Returns:
             shape [batch, src_len, d_model]
         """
-        raise NotImplementedError
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(x)
 
 
 class Decoder(nn.Module):
@@ -322,7 +427,8 @@ class Decoder(nn.Module):
 
     def __init__(self, layer: DecoderLayer, N: int) -> None:
         super().__init__()
-        raise NotImplementedError
+        self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(N)])
+        self.norm = nn.LayerNorm(layer.mha1.d_model)
 
     def forward(
         self,
@@ -340,7 +446,9 @@ class Decoder(nn.Module):
         Returns:
             shape [batch, tgt_len, d_model]
         """
-        raise NotImplementedError
+        for layer in self.layers:
+            x = layer(x, memory, src_mask, tgt_mask)
+        return self.norm(x)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -373,11 +481,27 @@ class Transformer(nn.Module):
         checkpoint_path: str = None,
     ) -> None:
         super().__init__()
-        # TODO: Instantiate 
+        # TODO: Instantiate the embedding layers, positional encoding, encoder, decoder, and output layer
         # init should also load the model weights if checkpoint path provided, download the .pth file like this
         if checkpoint_path is not None:
             gdown.download(id="<.pth drive id>", output=checkpoint_path, quiet=False)
-        raise NotImplementedError
+
+        self.src_embed = nn.Embedding(src_vocab_size, d_model)
+        self.tgt_embed = nn.Embedding(tgt_vocab_size, d_model)
+
+        self.pos_enc = PositionalEncoding(d_model, dropout)
+
+        enc_layer = EncoderLayer(d_model, num_heads, d_ff, dropout)
+        dec_layer = DecoderLayer(d_model, num_heads, d_ff, dropout)
+
+        self.encoder = Encoder(enc_layer, N)
+        self.decoder = Decoder(dec_layer, N)
+
+        self.fc_out = nn.Linear(d_model, tgt_vocab_size)
+
+        if checkpoint_path is not None:
+            state_dict = torch.load(checkpoint_path, map_location="cpu")
+            self.load_state_dict(state_dict)
 
     # ── AUTOGRADER HOOKS ── keep these signatures exactly ─────────────
 
@@ -396,8 +520,12 @@ class Transformer(nn.Module):
         Returns:
             memory : Encoder output, shape [batch, src_len, d_model]
         """
-    
-        raise NotImplementedError
+
+        x = self.src_embed(src)
+        x = self.pos_enc(x)
+        memory = self.encoder(x, src_mask)
+
+        return memory
 
     def decode(
         self,
@@ -418,7 +546,12 @@ class Transformer(nn.Module):
         Returns:
             logits : shape [batch, tgt_len, tgt_vocab_size]
         """
-        raise NotImplementedError
+        x = self.tgt_embed(tgt)
+        x = self.pos_enc(x)
+        x = self.decoder(x, memory, src_mask, tgt_mask)
+        logits = self.fc_out(x)
+
+        return logits
 
     def forward(
         self,
@@ -439,8 +572,10 @@ class Transformer(nn.Module):
         Returns:
             logits : shape [batch, tgt_len, tgt_vocab_size]
         """
-        raise NotImplementedError
+        memory = self.encode(src, src_mask)
+        logits = self.decode(memory, src_mask, tgt, tgt_mask)
 
+        return logits
 
     def infer(self, src_sentence: str) -> str:
         """
@@ -453,4 +588,49 @@ class Transformer(nn.Module):
         Returns:
             The fully translated English string, detokenized and clean.
         """
-        raise NotImplementedError
+        self.eval()
+
+        device = next(self.parameters()).device
+
+        # Assumes these are attached externally
+        spacy_de = self.spacy_de
+        spacy_en = self.spacy_en
+        src_vocab = self.src_vocab
+        tgt_vocab = self.tgt_vocab
+        idx2tgt = {idx: tok for tok, idx in tgt_vocab.items()}
+
+        # Tokenize source
+        src_tokens = [tok.text.lower() for tok in spacy_de.tokenizer(src_sentence)]
+        src_indices = [src_vocab.get(tok, src_vocab["<unk>"]) for tok in src_tokens]
+
+        src_tensor = torch.tensor(src_indices).unsqueeze(0).to(device)
+
+        src_mask = make_src_mask(src_tensor)
+
+        memory = self.encode(src_tensor, src_mask)
+
+        # Start with <sos>
+        tgt_indices = [tgt_vocab["<sos>"]]
+
+        max_len = 50
+
+        for _ in range(max_len):
+            tgt_tensor = torch.tensor(tgt_indices).unsqueeze(0).to(device)
+            tgt_mask = make_tgt_mask(tgt_tensor)
+
+            out = self.decode(memory, src_mask, tgt_tensor, tgt_mask)
+
+            next_token = out[:, -1, :].argmax(dim=-1).item()
+
+            tgt_indices.append(next_token)
+
+            if next_token == tgt_vocab["<eos>"]:
+                break
+
+        # Convert indices to tokens
+        tokens = [idx2tgt[idx] for idx in tgt_indices]
+
+        # Remove special tokens
+        tokens = tokens[1:-1]
+
+        return " ".join(tokens)
