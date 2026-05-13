@@ -1,3 +1,5 @@
+import torch
+import torch.optim as optim
 from torch.optim.lr_scheduler import LRScheduler
 
 class NoamScheduler(LRScheduler):
