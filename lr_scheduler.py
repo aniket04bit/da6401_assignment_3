@@ -1,3 +1,5 @@
+from torch.optim.lr_scheduler import LRScheduler
+
 class NoamScheduler(LRScheduler):
     """
     Noam learning rate scheduler as described in "Attention Is All You Need".
