@@ -217,12 +217,12 @@ def evaluate_bleu(
     predictions = []
     references = []
 
-    # helper for vocab lookup
+# helper for vocab lookup
     if isinstance(tgt_vocab, dict):
         itos = {v: k for k, v in tgt_vocab.items()}
     else:
         itos = tgt_vocab.itos
-    
+
     def idx_to_token(idx):
         return itos.get(idx, "<unk>")
 
@@ -421,25 +421,28 @@ def run_training_experiment() -> None:
 
     # 8. Training loop
     for epoch in range(config["num_epochs"]):
-        train_loss = run_epoch(
-            train_loader, model, loss_fn,
-            optimizer, scheduler,
-            epoch, is_train=True, device=device
-        )
 
-        val_loss = run_epoch(
-            val_loader, model, loss_fn,
-            None, None,
-            epoch, is_train=False, device=device
-        )
+      train_loss = run_epoch(
+          train_loader, model, loss_fn,
+          optimizer, scheduler,
+          epoch, is_train=True, device=device
+      )
 
-        save_checkpoint(model, optimizer, scheduler, epoch)
+      val_loss = run_epoch(
+          val_loader, model, loss_fn,
+          None, None,
+          epoch, is_train=False, device=device
+      )
 
-        wandb.log({
-            "epoch": epoch,
-            "train_loss": train_loss,
-            "val_loss": val_loss
-        })
+      print(f"Epoch {epoch}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}")  # 👈 added
+
+      save_checkpoint(model, optimizer, scheduler, epoch)
+
+      wandb.log({
+          "epoch": epoch,
+          "train_loss": train_loss,
+          "val_loss": val_loss
+      })
 
     # 9. BLEU evaluation
     bleu = evaluate_bleu(model, test_loader, train_ds.tgt_vocab, device=device)
