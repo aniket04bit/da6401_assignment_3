@@ -218,11 +218,13 @@ def evaluate_bleu(
     references = []
 
     # helper for vocab lookup
+    if isinstance(tgt_vocab, dict):
+        itos = {v: k for k, v in tgt_vocab.items()}
+    else:
+        itos = tgt_vocab.itos
+    
     def idx_to_token(idx):
-        if hasattr(tgt_vocab, "itos"):
-            return tgt_vocab.itos[idx]
-        else:
-            return tgt_vocab.lookup_token(idx)
+        return itos.get(idx, "<unk>")
 
     with torch.no_grad():
         for src, tgt in test_dataloader:
