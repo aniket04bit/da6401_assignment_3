@@ -15,3 +15,6 @@ assignment3/
 ├── dataset.py         # Multi30k dataset loading and spacy tokenization
 ├── train.py           # Training loops and Greedy Decoding inference
 ```
+
+wandb report link: https://api.wandb.ai/links/me22b104-iit-madras-foundation/9rmol9pm
+github repo link: https://github.com/aniket04bit/da6401_assignment_3
